@@ -165,6 +165,8 @@ root@imx:~/$ systemctl enable systemd-networkd.service
 root@imx:~/$ systemctl enable systemd-resolved.service
 root@imx:~/$ systemctl enable systemd-timesyncd.service
 root@imx:~/$ nano /etc/profile.d/custom.sh
+root@imx:~/$ exit
+foo@bar:~/work$
 ```
 The constent of custom.sh is listed as below:
 ```sh
