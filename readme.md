@@ -1,4 +1,4 @@
-# This is the manifest of the Advantech Linux TSU Yocto project
+# Manifest of the Advantech Linux TSU Yocto project
 The goal of this project is to release opensource Linux source code that runs on Advantech Hardware
 
 ## Download the Yocto Linux for ECU-150-A1 and setup environment variables
@@ -62,4 +62,159 @@ clean:
 	rm -rf *.o *~ core .depend .*.cmd *.ko *.mod.c .tmp_versions vtty *.symvers *.order *.a *.mod
 foo@bar:~/example/USB-4604-BE-linux-driver/driver$ export KERNELDIR=$SDKTARGETSYSROOT/usr/src/kernel
 foo@bar:~/example/USB-4604-BE-linux-driver$ make
+```
+## Build Debian/Ubuntu based rootfs
+follow the instructions below to build the rootfs with debootstrap, qemu, and chroot
+```console
+foo@bar:~/work$ sudo apt-get install qemu-user-static debootstrap debian-archive-keyring
+foo@bar:~/work$ nano ch-rootfs.sh
+foo@bar:~/work$ chmod +x ./ch-rootfs.sh
+```
+the content of ch-rootfs.sh is listed as below:
+```sh
+#!/bin/bash
+#
+function mnt() {
+ echo "MOUNTING"
+ sudo mount -t proc /proc ${2}proc
+ sudo mount -t sysfs /sys ${2}sys
+ sudo mount -o bind /dev ${2}dev
+ sudo mount -o bind /dev/pts ${2}dev/pts
+ sudo chroot ${2}
+}
+function umnt() {
+ echo "UNMOUNTING"
+ sudo umount ${2}proc
+ sudo umount ${2}sys
+ sudo umount ${2}dev/pts
+ sudo umount ${2}dev
+}
+
+function pack() {
+ echo "Packing rootfs to rootfs.tar.gz ...."
+ sudo rm -f ../rootfs.tar.gz
+ echo '=== tar rootfs start ==='
+ cd $2 && sudo tar zcvf ../rootfs.tar.gz *
+ echo '=== tar rootfs finish ==='
+}
+
+if [ "$1" == "-m" ] && [ -n "$2" ] ;
+then
+ mnt $1 $2
+ umnt $1 $2
+elif [ "$1" == "-u" ] && [ -n "$2" ];
+then
+ umnt $1 $2
+elif [ "$1" == "-z" ] && [ -n "$2" ];
+then
+ pack $1 $2
+else
+ echo ""
+ echo "Either 1'st, 2'nd or both parameters were missing"
+ echo ""
+ echo "1'st parameter can be one of these: -m(mount) OR -u(umount) or -z(pack)"
+ echo "2'nd parameter is the full path of rootfs directory(with trailing '/')"
+ echo ""
+ echo "For example: ./ch-rootfs.sh -m /media/sdcard/"
+ echo ""
+ echo 1st parameter : ${1}
+ echo 2nd parameter : ${2}
+fi
+
+```
+This following commands will slightly differe between Debian 12 and Ubuntu 24.04; therefore, we seperate the instuctions into two subsections.  
+Follow the instructions based on your target distro.
+### Debian 12 
+```console
+foo@bar:~/work$ sudo debootstrap --arch arm64 bookworm debian_rootfs http://deb.debian.org/debian
+foo@bar:~/work$ sudo tar xvf ./modules-imx8mq-ecu150a1.tgz -C ./my_rootfs/usr/
+foo@bar:~/work$ cp firmware-imx-sdma-imx7d*.deb ./my_rootfs/tmp/
+foo@bar:~/work$ cp linux-firmware-rtl*.deb ./my_rootfs/tmp/
+foo@bar:~/work$ ./ch-rootfs.sh -m ./my_rootfs/
+imx@bar:~/$ apt-get update
+imx@bar:~/$ apt-get install sudo ssh net-tools iputils-ping rsyslog bash-completion htop resolvconf dialog gpiod vim locales netplan.io systemd-timesyncd systemd-resolved
+imx@bar:~/$ dpkg-reconfigure locales
+imx@bar:~/$ cd /tmp  && dpkg -i *.deb
+```
+### Ubuntu 24.04
+```console
+foo@bar:~/work$ sudo debootstrap --arch arm64 noble my_rootfs http://tw.archive.ubuntu.com/ubuntu/
+foo@bar:~/work$ ./ch-rootfs.sh -m ./my_rootfs/
+foo@bar:~/work$ sudo tar xvf ./modules-imx8mq-ecu150a1.tgz -C ./my_rootfs/usr/
+foo@bar:~/work$ cp firmware-imx-sdma-imx7d*.deb ./my_rootfs/tmp/
+foo@bar:~/work$ cp linux-firmware-rtl*.deb ./my_rootfs/tmp/
+foo@bar:~/work$ ./ch-rootfs.sh -m ./my_rootfs/
+root@imx:~/$ apt-get update
+root@imx:~/$ apt install sudo ssh net-tools iputils-ping rsyslog bash-completion htop vim nano netplan.io software-properties-common
+root@imx:~/$ add-apt-repository universe
+root@imx:~/$ cd /tmp  && dpkg -i *.deb
+```
+The difference between Debian 12/Ubuntu 24.04 stops here.  
+The following instructions can be shared between two target distros.
+```console
+root@imx:~/$ echo 'imx8mq-ecu150a1' > /etc/hostname
+root@imx:~/$ cat <<EOF >> /etc/udev/rules.d/localextra.rules
+# Microchip Technology USB2740 Hub
+KERNEL=="rtc1", SYMLINK+="rtc"
+
+KERNEL=="ttymxc2", GROUP="dialout", MODE="0664", SYMLINK+="ttyAP0"
+KERNEL=="ttymxc3", GROUP="dialout", MODE="0664", SYMLINK+="ttyAP1"
+KERNEL=="fram0", GROUP="dialout", MODE="0664", SYMLINK+="fram"
+EOF
+root@imx:~/$ systemctl enable systemd-networkd.service
+root@imx:~/$ systemctl enable systemd-resolved.service
+root@imx:~/$ systemctl enable systemd-timesyncd.service
+root@imx:~/$ nano /etc/profile.d/custom.sh
+```
+The constent of custom.sh is listed as below:
+```sh
+# Set the prompt for bash and ash (no other shells known to be in use here)
+[ -z "$PS1" ] || PS1='\u@\h:\w\$ '
+
+# Use the EDITOR not being set as a trigger to call resize later on
+FIRSTTIMESETUP=0
+if [ -z "$EDITOR" ] ; then
+    FIRSTTIMESETUP=1
+fi
+
+if [ -t 0 -a $# -eq 0 ]; then
+    if [ ! -x /usr/bin/resize ] ; then
+        if [ -n "$BASH_VERSION" ] ; then
+            # Optimized resize funciton for bash
+resize() {
+    local x y
+    IFS='[;' read -t 2 -p $(printf '\e7\e[r\e[999;999H\e[6n\e8') -sd R _ y x _
+    [ -n "$y" ] && \
+    echo -e "COLUMNS=$x;\nLINES=$y;\nexport COLUMNS LINES;" && \
+    stty cols $x rows $y
+}
+        else
+# Portable resize function for ash/bash/dash/ksh
+# with subshell to avoid local variables
+resize() {
+    (o=$(stty -g)
+    stty -echo raw min 0 time 2
+    printf '\0337\033[r\033[999;999H\033[6n\0338'
+    if echo R | read -d R x 2> /dev/null; then
+        IFS='[;R' read -t 2 -d R -r z y x _
+    else
+        IFS='[;R' read -r _ y x _
+    fi
+    stty "$o"
+    [ -z "$y" ] && y=${z##*[}&&x=${y##*;}&&y=${y%%;*}
+    [ -n "$y" ] && \
+    echo "COLUMNS=$x;"&&echo "LINES=$y;"&&echo "export COLUMNS LINES;"&& \
+    stty cols $x rows $y)
+}
+        fi
+    fi
+    # only do this for /dev/tty[A-z] which are typically
+    # serial ports
+    if [ $FIRSTTIMESETUP -eq 1 -a ${SHLVL:-1} -eq 1 ] ; then
+        case $(tty 2>/dev/null) in
+            /dev/tty[A-z]*) resize >/dev/null;;
+        esac
+    fi
+fi
+
 ```
